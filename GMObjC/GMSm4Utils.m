@@ -66,12 +66,10 @@
     // 计算填充长度
     int pad_en = SM4_BLOCK_SIZE - plain_obj_len % SM4_BLOCK_SIZE;
     size_t result_len = plain_obj_len + pad_en;
-    // 填充
+    // PKCS7 填充
     uint8_t *p_text = (uint8_t *)OPENSSL_zalloc((int)(result_len + 1));
     memcpy(p_text, plain_obj, plain_obj_len);
-    for (int i = 0; i < pad_en; i++) {
-        p_text[plain_obj_len + i] = pad_en;
-    }
+    memset(p_text + plain_obj_len, pad_en, pad_en);
     
     uint8_t *result = (uint8_t *)OPENSSL_zalloc((int)(result_len + 1));
     int group_num = (int)(result_len / SM4_BLOCK_SIZE);
@@ -137,15 +135,7 @@
     // 移除填充
     int pad_len = (int)result[c_obj_len - 1];
     int end_len = (int)(c_obj_len - pad_len);
-    
-    NSData *plainData = nil;
-    if (pad_len > 0 && pad_len < SM4_BLOCK_SIZE + 1) {
-        uint8_t *no_pad_result = (uint8_t *)OPENSSL_zalloc((int)(end_len + 1));
-        memcpy(no_pad_result, result, end_len);
-        plainData = [NSData dataWithBytes:no_pad_result length:end_len];
-        
-        OPENSSL_free(no_pad_result);
-    }
+    NSData *plainData = [NSData dataWithBytes:result length:end_len];
     
     OPENSSL_free(result);
     
@@ -180,9 +170,8 @@
     // PKCS7 填充
     uint8_t *p_text = (uint8_t *)OPENSSL_zalloc((int)(result_len + 1));
     memcpy(p_text, p_obj, p_obj_len);
-    for (int i = 0; i < pad_len; i++) {
-        p_text[p_obj_len + i] = pad_len;
-    }
+    memset(p_text + p_obj_len, pad_len, pad_len);
+    
     uint8_t *result = (uint8_t *)OPENSSL_zalloc((int)(result_len + 1));
     // 密钥 key Hex 转 uint8_t
     NSData *kData = [GMUtils hexToData:key];
@@ -249,16 +238,8 @@
     // 移除填充
     int pad_len = (int)result[c_obj_len - 1];
     int end_len = (int)(c_obj_len - pad_len);
-
-    NSData *plainData = nil;
-    if (pad_len > 0 && pad_len < SM4_BLOCK_SIZE + 1) {
-        uint8_t *no_pad_result = (uint8_t *)OPENSSL_zalloc((int)(end_len + 1));
-        memcpy(no_pad_result, result, end_len);
-        plainData = [NSData dataWithBytes:no_pad_result length:end_len];
-        
-        OPENSSL_free(no_pad_result);
-    }
-
+    NSData *plainData = [NSData dataWithBytes:result length:end_len];
+    
     OPENSSL_free(result);
     
     return plainData;
