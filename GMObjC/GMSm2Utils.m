@@ -202,7 +202,7 @@ static int kDefaultEllipticCurveType = NID_sm2;
         }
         
         size_t ptext_len = 0;
-        if (!sm2_plaintext_size(cipher_bytes, ctext_len, &ptext_len)) {
+        if (!sm2_plaintext_size(key, digest, ctext_len, &ptext_len)) {
             break;
         }
         
@@ -256,40 +256,6 @@ static int kDefaultEllipticCurveType = NID_sm2;
     
     NSData *plainData = [self deData:cipherData hexPriKey:privateKey];
     return plainData;
-}
-
-///MARK: - 密文格式转换
-
-// C1C2C3 顺序的 Hex 格式密文转为 C1C3C2 顺序
-+ (nullable NSString *)convertC1C2C3ToC1C3C2:(NSString *)ciphertext hasPrefix:(BOOL)hasPrefix {
-    NSString *cipherHex = ciphertext;
-    if (hasPrefix == YES && cipherHex.length > 2) {
-        cipherHex = [cipherHex substringFromIndex:2];
-    }
-    if (cipherHex.length < 192) {
-        return nil;
-    }
-    NSString *c1 = [cipherHex substringToIndex:128];
-    NSString *c3 = [cipherHex substringFromIndex:(cipherHex.length - 64)];
-    NSString *c2 = [cipherHex substringWithRange:NSMakeRange(128, cipherHex.length - c1.length - c3.length)];
-    NSString *c1c3c2 = [NSString stringWithFormat:@"%@%@%@", c1, c3, c2];
-    return c1c3c2;
-}
-
-// C1C3C2 顺序的 Hex 格式密文转为 C1C2C3 顺序
-+ (nullable NSString *)convertC1C3C2ToC1C2C3:(NSString *)ciphertext hasPrefix:(BOOL)hasPrefix {
-    NSString *cipherHex = ciphertext;
-    if (hasPrefix == YES && cipherHex.length > 2) {
-        cipherHex = [cipherHex substringFromIndex:2];
-    }
-    if (cipherHex.length < 192) {
-        return nil;
-    }
-    NSString *c1 = [cipherHex substringToIndex:128];
-    NSString *c3 = [cipherHex substringWithRange:NSMakeRange(128, 64)];
-    NSString *c2 = [cipherHex substringFromIndex:192];
-    NSString *c1c2c3 = [NSString stringWithFormat:@"%@%@%@", c1, c2, c3];
-    return c1c2c3;
 }
 
 ///MARK: - ASN1 编码
@@ -488,6 +454,64 @@ static int kDefaultEllipticCurveType = NID_sm2;
     return c1c3c2Data;
 }
 
+/// MARK: - SM2 签名 不算sm3
++ (nullable NSString *)simpleSign:(NSData *)plainData priKey:(NSString *)priKey userData:(nullable NSData *)userData{
+    if (plainData.length == 0 || priKey.length == 0) {
+        return nil;
+    }
+    
+    if (userData.length == 0) {
+        userData = [NSData dataWithBytes:SM2_DEFAULT_USERID length:strlen(SM2_DEFAULT_USERID)];
+    }
+    const char *private_key = priKey.UTF8String;
+//    uint8_t *plain_bytes = (uint8_t *)plainData.bytes;
+//    size_t plain_len = plainData.length;
+//    uint8_t *user_id = (uint8_t *)userData.bytes;
+//    size_t user_len = userData.length;
+    
+    EC_GROUP *group = EC_GROUP_new_by_curve_name(kDefaultEllipticCurveType);
+    BIGNUM *pri_num = NULL;  // 私钥
+    EC_KEY *key = NULL; // 密钥对
+    EC_POINT *pub_point = NULL; // 公钥坐标
+    do {
+        if (!BN_hex2bn(&pri_num, private_key)) {
+            break; // 私钥转 BIGNUM
+        }
+        key = EC_KEY_new();
+        if (!EC_KEY_set_group(key, group)) {
+            break;
+        }
+        if (!EC_KEY_set_private_key(key, pri_num)) {
+            break; // 设置私钥
+        }
+        pub_point = EC_POINT_new(group);
+        if (!EC_POINT_mul(group, pub_point, pri_num, NULL, NULL, NULL)) {
+            break; // 私钥算出公钥
+        }
+        if (!EC_KEY_set_public_key(key, pub_point)) {
+            break; // 设置公钥
+        }
+        // 计算签名
+        unsigned char *sig3[128];
+        unsigned int siglen;
+        unsigned char *pdata = [plainData bytes];
+        sm2_sign(pdata, 32, sig3, &siglen, key);
+        BIGNUM *ret;
+        ret = BN_bin2bn(sig3, siglen, NULL);
+        char *hex = BN_bn2hex(ret);
+        NSString *sigHex = [NSString stringWithCString:hex encoding:NSUTF8StringEncoding];
+        
+        NSLog(@"hex----%@", [NSString stringWithCString:hex encoding:NSUTF8StringEncoding]);
+        return sigHex;
+        
+    } while (NO);
+    
+    return nil;
+    
+}
+
+
+
 ///MARK: - SM2 签名
 + (nullable NSString *)signData:(NSData *)plainData priKey:(NSString *)priKey userData:(nullable NSData *)userData{
     if (plainData.length == 0 || priKey.length == 0) {
@@ -587,6 +611,70 @@ static int kDefaultEllipticCurveType = NID_sm2;
     return signRS;
 }
 
+///MARK: - SM2 不算hash 验签
+
++ (BOOL)simpleVerify:(NSData *)plainData signData:(NSData *)signData pubKey:(NSString *)pubKey userData:(nullable NSData *)userData{
+    if (plainData.length == 0 || signData.length == 0 || pubKey.length == 0) {
+        return NO;
+    }
+    
+    if (userData.length == 0) {
+        userData = [NSData dataWithBytes:SM2_DEFAULT_USERID length:strlen(SM2_DEFAULT_USERID)];
+    }
+    const char *pub_key = pubKey.UTF8String;
+    uint8_t *plain_bytes = (uint8_t *)plainData.bytes;
+    size_t plain_len = plainData.length;
+    uint8_t *user_id = (uint8_t *)userData.bytes;
+    size_t user_len = userData.length;
+//
+//    NSInteger signLen = signRS.length;
+//    NSString *r_hex = [signRS substringToIndex:signLen/2];
+//    NSString *s_hex = [signRS substringFromIndex:signLen/2];
+    
+    ECDSA_SIG *sig = NULL;  // 签名结果
+    BIGNUM *sig_r = NULL;
+    BIGNUM *sig_s = NULL;
+    const EVP_MD *digest = EVP_sm3();  // 摘要算法
+    EC_POINT *pub_point = NULL;  // 公钥坐标
+    EC_KEY *key = NULL;  // 密钥key
+    EC_GROUP *group = EC_GROUP_new_by_curve_name(kDefaultEllipticCurveType);
+    BOOL isOK = NO;  // 验签结果
+    
+    do {
+        
+        key = EC_KEY_new();
+        if (!EC_KEY_set_group(key, group)) {
+            break;
+        }
+        pub_point = EC_POINT_new(group);
+        EC_POINT_hex2point(group, pub_key, pub_point, NULL);
+        if (!EC_KEY_set_public_key(key, pub_point)) {
+            break;
+        }
+//        int ok = sm2_do_verify(key, digest, sig, user_id, user_len, plain_bytes, plain_len);
+//        NSLog(@"signRS--%@", signRS);
+//        NSData *sigData = [signRS dataUsingEncoding:NSUTF8StringEncoding];
+        
+        uint8_t *plain_bytes = (uint8_t *)plainData.bytes;
+        size_t plain_len = plainData.length;
+        uint8_t *sign_bytes = (uint8_t *)signData.bytes;
+        size_t sign_len = signData.length;
+        
+        unsigned char *signChar = [signData bytes];
+        unsigned char *pdata = [plainData bytes];
+//        for (int i=0; i<128;i++){
+//           NSLog(@"打印数据sig[%i]：%02x",i, signChar[i]);
+//        }
+        NSLog(@"int-----%i--%i", plain_len, sign_len);
+        int ok = sm2_verify(pdata, plain_len, signChar, sign_len, key);
+        NSLog(@"simple-verify: %i", ok);
+        isOK = ok > 0 ? YES : NO;
+        
+    } while (NO);
+    
+    
+    return isOK;
+}
 ///MARK: - SM2 验签
 
 + (BOOL)verifyData:(NSData *)plainData signRS:(NSString *)signRS pubKey:(NSString *)pubKey userData:(nullable NSData *)userData{
